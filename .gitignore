@@ -1,0 +1,30 @@
+# Build outputs
+/target/
+**/*.rs.bk
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment (never commit secrets)
+.env
+.env.local
+.envrc.local
+
+# Logs
+*.log
+
+# Temp files
+*.tmp
+unused_payees.txt
+
+# Config (user-specific - keep these out of git)
+# ~/Library/Application Support/budget-explorer/
+# ~/.config/budget-explorer/
