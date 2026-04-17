@@ -123,12 +123,29 @@ async fn chat(debug: bool, initial_query: Option<String>) -> Result<(), Box<dyn 
 
     let llm = Arc::new(OllamaProvider::new(&base_url, &model));
     let registry = Arc::new(ToolRegistry::new(Arc::clone(&client)));
-    let agent = Arc::new(Agent::new(registry.clone(), llm));
+
+    // Convert tool definitions to Ollama format
+    let ollama_tools = registry
+        .get_definitions()
+        .into_iter()
+        .map(|tool| {
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.parameters
+                }
+            })
+        })
+        .collect();
+
+    let mut agent = Agent::new(registry.clone(), llm).with_tools(ollama_tools);
 
     // Load profile
     let profile = UserProfile::load().ok().flatten();
 
-    // Build system prompt
+    // Build system prompt (for text fallback parsing)
     let tools_json = serde_json::to_string(&registry.get_definitions())
         .map_err(|e| format!("Failed to serialize tools: {}", e))?;
     let system_prompt = build_system_prompt(profile.as_ref(), &tools_json);
@@ -144,7 +161,7 @@ async fn chat(debug: bool, initial_query: Option<String>) -> Result<(), Box<dyn 
 
     // If initial query, run it and exit
     if let Some(query) = initial_query {
-        run_query(&agent, &system_prompt, &query, debug).await;
+        run_query(&mut agent, &system_prompt, &query, debug).await;
         return Ok(());
     }
 
@@ -161,13 +178,13 @@ async fn chat(debug: bool, initial_query: Option<String>) -> Result<(), Box<dyn 
             break;
         }
 
-        run_query(&agent, &system_prompt, input, debug).await;
+        run_query(&mut agent, &system_prompt, input, debug).await;
     }
 
     Ok(())
 }
 
-async fn run_query(agent: &Agent, system_prompt: &str, query: &str, debug: bool) {
+async fn run_query(agent: &mut Agent, system_prompt: &str, query: &str, debug: bool) {
     if debug {
         println!("\n--- USER INPUT ---\n{}", query);
     }

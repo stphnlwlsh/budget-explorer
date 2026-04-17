@@ -10,6 +10,7 @@ pub use ollama::OllamaProvider;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use crate::profile::{AdviceStyle, Tone, UserProfile};
 
 /// Message in a conversation.
@@ -19,10 +20,43 @@ pub struct Message {
     pub content: String,
 }
 
+/// A tool call returned by the LLM (native format).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCall {
+    /// Name of the tool to call.
+    pub name: String,
+    /// Arguments to pass to the tool.
+    pub arguments: Value,
+}
+
+/// LLM response with optional tool calls.
+#[derive(Debug, Clone)]
+pub struct LLMResponse {
+    /// Text content from the LLM.
+    pub content: String,
+    /// Optional tool calls requested by the LLM.
+    pub tool_calls: Option<Vec<ToolCall>>,
+}
+
+impl LLMResponse {
+    /// Check if response has tool calls.
+    pub fn has_tool_calls(&self) -> bool {
+        self.tool_calls.as_ref().is_some_and(|c| !c.is_empty())
+    }
+}
+
 /// LLM Provider trait.
 #[async_trait]
 pub trait LLMProvider: Send + Sync {
+    /// Send a chat request without tools (text-only response).
     async fn chat(&self, messages: Vec<Message>) -> Result<String, LLMError>;
+
+    /// Send a chat request with tools and get structured response.
+    async fn chat_with_tools(
+        &self,
+        messages: Vec<Message>,
+        tools: Vec<Value>,
+    ) -> Result<LLMResponse, LLMError>;
 }
 
 /// LLM Errors.
@@ -89,32 +123,22 @@ pub fn build_system_prompt(profile: Option<&UserProfile>, tools_json: &str) -> S
         ("Be helpful and friendly.".to_string(), "Keep responses concise and informative.".to_string())
     };
 
-    format!(r#"You are a budget advisor. Answer questions about spending using the available tools.
+    format!(r#"You are a helpful budget advisor. Your role is to retrieve budget data using tools, then summarize it clearly based on what the user asks.
 
 {goals_section}{concerns_section}
 IMPORTANT RULES:
-- Plain text only, NO markdown, NO tables
-- 1-2 sentences max
-- Use dollars like "$1,234.56"
+1. ONLY use tools to GET data - do not make up or estimate numbers
+2. ONLY summarize what the tools return - no calculations beyond basic addition/averages
+3. Plain text only, NO markdown, NO tables
+4. Use dollars like "$1,234.56"
 
-HOW TO ANSWER SPENDING QUESTIONS:
-1. Get the plan ID with get_plans
-2. Get transactions with get_transactions (includes payee_name field)
-3. Filter the transactions by payee name in your head
-4. Calculate total and respond
-
-TOOL CALL FORMAT - output ONLY JSON:
-{{"name": "get_plans", "arguments": {{}}}}
-{{"name": "get_transactions", "arguments": {{"plan_id": "YOUR_PLAN_ID"}}}}
+WORKFLOW:
+1. Call get_plans to find the plan ID
+2. Call the appropriate tool to fetch the data (search_payee_transactions, get_transactions, get_month, etc.)
+3. Summarize the data in the style requested by the user
 
 AVAILABLE TOOLS:
 {tools_json}
-
-EXAMPLE:
-User: "how much at Apple?"
-You: {{"name": "get_plans", "arguments": {{}}}}
-(next): {{"name": "get_transactions", "arguments": {{"plan_id": "abc123"}}}}
-Response: "You spent $847.23 at Apple this year (12 transactions)."
 
 TONE: {tone_instruction}
 STYLE: {style_instruction}"#,

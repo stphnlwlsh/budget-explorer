@@ -1,27 +1,46 @@
-//! Ollama LLM provider
+//! Ollama LLM provider with native tool calling support
 
 #![allow(dead_code, unused_imports, unused_variables)]
 
-use crate::ai::{LLMError, LLMProvider, Message};
+use crate::ai::{LLMError, LLMProvider, LLMResponse, Message, ToolCall};
 use async_trait::async_trait;
 use serde::Deserialize;
+use serde_json::Value;
 
-/// Ollama provider for local LLM inference.
+/// Ollama provider for local LLM inference with tool support.
 pub struct OllamaProvider {
     base_url: String,
     model: String,
     client: reqwest::Client,
 }
 
+/// Ollama API response structure.
 #[derive(Deserialize)]
 struct OllamaResponse {
     message: OllamaMessage,
     done: bool,
 }
 
+/// Ollama message structure.
 #[derive(Deserialize)]
 struct OllamaMessage {
     content: String,
+    /// Tool calls (if any) - present when model requests tool use
+    #[serde(default)]
+    tool_calls: Option<Vec<OllamaToolCall>>,
+}
+
+/// Tool call from Ollama in native format.
+#[derive(Deserialize)]
+struct OllamaToolCall {
+    function: OllamaToolFunction,
+}
+
+/// Function details from Ollama tool call.
+#[derive(Deserialize)]
+struct OllamaToolFunction {
+    name: String,
+    arguments: Value,
 }
 
 impl OllamaProvider {
@@ -41,25 +60,35 @@ impl OllamaProvider {
         Ok(Self::new(&base_url, &model))
     }
 
-    /// Send a chat request and get the complete response.
-    async fn chat_request(&self, messages: Vec<Message>) -> Result<String, LLMError> {
+    /// Send a chat request with optional tools.
+    async fn chat_request_with_tools(
+        &self,
+        messages: Vec<Message>,
+        tools: Option<Vec<Value>>,
+    ) -> Result<LLMResponse, LLMError> {
         let url = format!("{}/api/chat", self.base_url);
-        
-        let ollama_messages: Vec<serde_json::Value> = messages
-            .into_iter()
-            .map(|m| {
+
+        let mut body = serde_json::json!({
+            "model": self.model,
+            "messages": messages.into_iter().map(|m| {
                 serde_json::json!({
                     "role": m.role,
                     "content": m.content
                 })
-            })
-            .collect();
-
-        let body = serde_json::json!({
-            "model": self.model,
-            "messages": ollama_messages,
-            "stream": false
+            }).collect::<Vec<_>>(),
+            "stream": false,
+            // Recommended sampling parameters for Gemma 4
+            "options": {
+                "temperature": 1.0,
+                "top_p": 0.95,
+                "top_k": 64
+            }
         });
+
+        // Add tools if provided
+        if let Some(tools) = tools {
+            body["tools"] = serde_json::json!(tools);
+        }
 
         let resp = self
             .client
@@ -80,17 +109,42 @@ impl OllamaProvider {
             .await
             .map_err(|e| LLMError::Parse(e.to_string()))?;
 
-        if ollama_resp.message.content.is_empty() {
+        if ollama_resp.message.content.is_empty() && ollama_resp.message.tool_calls.is_none() {
             return Err(LLMError::EmptyResponse);
         }
 
-        Ok(ollama_resp.message.content)
+        // Convert Ollama tool calls to our format
+        let tool_calls = ollama_resp.message.tool_calls.map(|calls| {
+            calls
+                .into_iter()
+                .map(|call| ToolCall {
+                    name: call.function.name,
+                    arguments: call.function.arguments,
+                })
+                .collect()
+        });
+
+        Ok(LLMResponse {
+            content: ollama_resp.message.content,
+            tool_calls,
+        })
     }
 }
 
 #[async_trait]
 impl LLMProvider for OllamaProvider {
+    /// Send a chat request without tools (text-only response).
     async fn chat(&self, messages: Vec<Message>) -> Result<String, LLMError> {
-        self.chat_request(messages).await
+        let response = self.chat_request_with_tools(messages, None).await?;
+        Ok(response.content)
+    }
+
+    /// Send a chat request with tools and get structured response.
+    async fn chat_with_tools(
+        &self,
+        messages: Vec<Message>,
+        tools: Vec<Value>,
+    ) -> Result<LLMResponse, LLMError> {
+        self.chat_request_with_tools(messages, Some(tools)).await
     }
 }
