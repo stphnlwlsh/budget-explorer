@@ -3,8 +3,8 @@
 #![allow(dead_code, unused_imports, unused_variables)]
 
 use crate::ynab::types::{
-    Account, CategoryGroup, ClientError, Month, Payee, Plan, ScheduledTransaction, Transaction,
-    User,
+    Account, CategoryGroup, ClientError, DisplayAccount, DisplayTransaction, Month, Payee, Plan,
+    ScheduledTransaction, Transaction, User,
 };
 use crate::ynab::Client;
 use serde::{Deserialize, Serialize};
@@ -116,7 +116,7 @@ impl ToolRegistry {
         // get_accounts
         self.register(
             "get_accounts",
-            "Get all accounts for a plan",
+            "Get all accounts for a plan. Returns account names and balances in dollars.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -127,7 +127,11 @@ impl ToolRegistry {
             |args, client| {
                 let plan_id = args["plan_id"].as_str().unwrap_or("");
                 match client.blocking_get_accounts(plan_id) {
-                    Ok(accounts) => ToolResult::success("get_accounts", &accounts),
+                    Ok(accounts) => {
+                        let display_accounts: Vec<DisplayAccount> =
+                            accounts.iter().map(DisplayAccount::from).collect();
+                        ToolResult::success("get_accounts", &display_accounts)
+                    }
                     Err(e) => ToolResult::error("get_accounts", e),
                 }
             },
@@ -189,7 +193,11 @@ impl ToolRegistry {
                 let plan_id = args["plan_id"].as_str().unwrap_or("");
                 let payee_search = args["payee_search"].as_str().unwrap_or("");
                 match client.blocking_search_payee_transactions(plan_id, payee_search) {
-                    Ok(txs) => ToolResult::success("search_payee_transactions", &txs),
+                    Ok(txs) => {
+                        let display_txs: Vec<DisplayTransaction> =
+                            txs.iter().map(DisplayTransaction::from).collect();
+                        ToolResult::success("search_payee_transactions", &display_txs)
+                    }
                     Err(e) => ToolResult::error("search_payee_transactions", e),
                 }
             },
@@ -218,7 +226,9 @@ impl ToolRegistry {
                         // Limit results
                         let limit = args.get("limit").and_then(|v| v.as_i64()).map(|v| v as usize).unwrap_or(100);
                         txs.truncate(limit);
-                        ToolResult::success("get_transactions", &txs)
+                        let display_txs: Vec<DisplayTransaction> =
+                            txs.iter().map(DisplayTransaction::from).collect();
+                        ToolResult::success("get_transactions", &display_txs)
                     }
                     Err(e) => ToolResult::error("get_transactions", e),
                 }
@@ -241,7 +251,11 @@ impl ToolRegistry {
                 let plan_id = args["plan_id"].as_str().unwrap_or("");
                 let month = args["month"].as_str().unwrap_or("");
                 match client.blocking_get_transactions_by_month(plan_id, month) {
-                    Ok(txs) => ToolResult::success("get_transactions_by_month", &txs),
+                    Ok(txs) => {
+                        let display_txs: Vec<DisplayTransaction> =
+                            txs.iter().map(DisplayTransaction::from).collect();
+                        ToolResult::success("get_transactions_by_month", &display_txs)
+                    }
                     Err(e) => ToolResult::error("get_transactions_by_month", e),
                 }
             },

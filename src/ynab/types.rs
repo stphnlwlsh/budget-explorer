@@ -411,6 +411,32 @@ pub struct Account {
     pub deleted: bool,
 }
 
+/// Display-friendly account with formatted balances (for LLM).
+#[derive(Serialize)]
+pub struct DisplayAccount {
+    pub id: String,
+    pub name: String,
+    pub account_type: String,
+    pub on_budget: bool,
+    pub balance: String,
+    pub cleared_balance: String,
+    pub uncleared_balance: String,
+}
+
+impl From<&Account> for DisplayAccount {
+    fn from(account: &Account) -> Self {
+        Self {
+            id: account.id.clone(),
+            name: account.name.clone(),
+            account_type: account.account_type.clone(),
+            on_budget: account.on_budget,
+            balance: format_milliunits(account.balance),
+            cleared_balance: format_milliunits(account.cleared_balance),
+            uncleared_balance: format_milliunits(account.uncleared_balance),
+        }
+    }
+}
+
 #[derive(Deserialize)]
 pub struct AccountResponse {
     pub data: AccountData,
@@ -588,6 +614,34 @@ pub struct Transaction {
     pub debt_transaction_type: Option<String>,
     pub deleted: bool,
     pub subtransactions: Vec<SubTransaction>,
+}
+
+/// Display-friendly transaction with formatted amount.
+#[derive(Serialize)]
+pub struct DisplayTransaction {
+    pub id: String,
+    pub date: String,
+    pub amount: String,
+    pub memo: Option<String>,
+    pub cleared: String,
+    pub account_name: Option<String>,
+    pub payee_name: Option<String>,
+    pub category_name: Option<String>,
+}
+
+impl From<&Transaction> for DisplayTransaction {
+    fn from(tx: &Transaction) -> Self {
+        Self {
+            id: tx.id.clone(),
+            date: tx.date.clone(),
+            amount: tx.amount_formatted.clone().unwrap_or_else(|| format_milliunits(tx.amount)),
+            memo: tx.memo.clone(),
+            cleared: format!("{:?}", tx.cleared),
+            account_name: tx.account_name.clone(),
+            payee_name: tx.payee_name.clone(),
+            category_name: tx.category_name.clone(),
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize, Clone)]
