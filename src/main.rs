@@ -33,7 +33,7 @@ fn load_env() {
     }
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread")]
 async fn main() {
     load_env();
 
@@ -177,7 +177,7 @@ async fn run_query(agent: &Agent, system_prompt: &str, query: &str, debug: bool)
     use std::sync::Arc;
     let running = Arc::new(AtomicBool::new(true));
     let running_clone = running.clone();
-    std::thread::spawn(move || {
+    let handle = std::thread::spawn(move || {
         let dots = ["   ", ".  ", ".. ", "..."];
         let mut i = 0;
         while running_clone.load(Ordering::Relaxed) {
@@ -190,7 +190,8 @@ async fn run_query(agent: &Agent, system_prompt: &str, query: &str, debug: bool)
 
     let result = agent.run(query, system_prompt).await;
     running.store(false, Ordering::Relaxed);
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    // Wait for the thinking thread to finish and clear its output
+    let _ = handle.join();
 
     match result {
         Ok(response) => {

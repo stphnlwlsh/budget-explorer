@@ -20,6 +20,27 @@ pub struct ParsedToolCall {
 /// Maximum number of tool-calling iterations before giving up.
 const MAX_ITERATIONS: u32 = 10;
 
+/// Map technical tool names to human-friendly names.
+fn friendly_tool_name(tool_name: &str) -> &'static str {
+    match tool_name {
+        "get_plans" => "Fetching budget plans",
+        "get_plan" => "Fetching budget plan details",
+        "get_accounts" => "Fetching accounts",
+        "get_categories" => "Fetching categories",
+        "get_payees" => "Fetching payees",
+        "get_transactions" => "Fetching all transactions",
+        "get_transactions_by_month" => "Fetching month transactions",
+        "get_month" => "Fetching month summary",
+        "get_scheduled_transactions" => "Fetching scheduled transactions",
+        _ => "Running tool",
+    }
+}
+
+/// Print progress indicator to stderr.
+fn print_progress(msg: &str) {
+    eprintln!("\n→ {}", msg);
+}
+
 /// Agent for handling tool-calling conversations.
 pub struct Agent {
     registry: Arc<ToolRegistry>,
@@ -50,8 +71,11 @@ impl Agent {
             
             // Check if the response contains a tool call
             if let Some(tool_call) = self.parse_tool_call(&response) {
-                // Execute the tool
-                let result = self.registry.execute(&tool_call.name, tool_call.arguments).await;
+                // Print progress indicator
+                print_progress(friendly_tool_name(&tool_call.name));
+                
+                // Execute the tool (sync)
+                let result = self.registry.execute(&tool_call.name, tool_call.arguments);
                 
                 // Add assistant message and tool result to conversation
                 messages.push(Message {
@@ -80,6 +104,7 @@ impl Agent {
     /// Parse a tool call from the LLM response text.
     /// 
     /// Looks for JSON in the format: {"name": "...", "arguments": {...}}
+    /// or {"tool_name": "...", "arguments": {...}}
     /// The JSON may be wrapped in markdown code blocks or plain text.
     fn parse_tool_call(&self, text: &str) -> Option<ParsedToolCall> {
         // Try to find JSON in the text
@@ -89,8 +114,11 @@ impl Agent {
         // Parse the JSON
         let parsed: serde_json::Value = serde_json::from_str(&json_text).ok()?;
         
-        // Extract name and arguments
-        let name = parsed.get("name")?.as_str()?.to_string();
+        // Extract name - check both "name" and "tool_name"
+        let name = parsed.get("name")
+            .or_else(|| parsed.get("tool_name"))?
+            .as_str()?
+            .to_string();
         let arguments = parsed.get("arguments")?.clone();
         
         Some(ParsedToolCall { name, arguments })

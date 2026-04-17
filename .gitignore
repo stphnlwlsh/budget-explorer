@@ -16,7 +16,11 @@ Thumbs.db
 # Environment (never commit secrets)
 .env
 .env.local
+.envrc
 .envrc.local
+
+# Agent context (user-specific)
+.opencode/
 
 # Logs
 *.log

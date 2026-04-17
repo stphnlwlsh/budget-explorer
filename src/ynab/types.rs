@@ -2,15 +2,15 @@
 
 #![allow(dead_code, unused_imports, unused_variables)]
 
-use serde::Deserialize;
 use serde::de::{self, Deserializer, Visitor};
+use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fmt;
 use std::time::Duration;
 
 // ============================================================================
-// Client
+// Client (async)
 // ============================================================================
 
 pub struct Client {
@@ -32,10 +32,7 @@ impl Client {
         }
     }
 
-    async fn get<T: for<'de> serde::Deserialize<'de>>(
-        &self,
-        endpoint: &str,
-    ) -> Result<T, ClientError> {
+    async fn get<T: for<'de> serde::Deserialize<'de>>(&self, endpoint: &str) -> Result<T, ClientError> {
         let url = format!("{}{}", self.base_url, endpoint);
         let resp = self
             .http
@@ -49,7 +46,9 @@ impl Client {
             let body = resp.text().await.unwrap_or_default();
             return Err(ClientError::Api { status, body });
         }
-        resp.json::<T>().await.map_err(|e| ClientError::Parse(e.to_string()))
+        resp.json::<T>()
+            .await
+            .map_err(|e| ClientError::Parse(e.to_string()))
     }
 
     // User
@@ -81,7 +80,8 @@ impl Client {
     }
 
     pub async fn get_account(&self, plan_id: &str, account_id: &str) -> Result<Account, ClientError> {
-        let resp: AccountResponse = self.get(&format!("/plans/{}/accounts/{}", plan_id, account_id)).await?;
+        let resp: AccountResponse =
+            self.get(&format!("/plans/{}/accounts/{}", plan_id, account_id)).await?;
         Ok(resp.data.account)
     }
 
@@ -92,12 +92,21 @@ impl Client {
     }
 
     pub async fn get_category(&self, plan_id: &str, category_id: &str) -> Result<Category, ClientError> {
-        let resp: CategoryResponse = self.get(&format!("/plans/{}/categories/{}", plan_id, category_id)).await?;
+        let resp: CategoryResponse =
+            self.get(&format!("/plans/{}/categories/{}", plan_id, category_id)).await?;
         Ok(resp.data.category)
     }
 
-    pub async fn get_month_category(&self, plan_id: &str, month: &str, category_id: &str) -> Result<MonthCategory, ClientError> {
-        let resp: MonthCategoryResponse = self.get(&format!("/plans/{}/months/{}/categories/{}", plan_id, month, category_id)).await?;
+    pub async fn get_month_category(
+        &self,
+        plan_id: &str,
+        month: &str,
+        category_id: &str,
+    ) -> Result<MonthCategory, ClientError> {
+        let resp: MonthCategoryResponse = self.get(&format!(
+            "/plans/{}/months/{}/categories/{}",
+            plan_id, month, category_id
+        )).await?;
         Ok(resp.data.month_category)
     }
 
@@ -129,50 +138,153 @@ impl Client {
         Ok(resp.data.transactions)
     }
 
-    pub async fn get_transaction(&self, plan_id: &str, transaction_id: &str) -> Result<Transaction, ClientError> {
-        let resp: TransactionResponse = self.get(&format!("/plans/{}/transactions/{}", plan_id, transaction_id)).await?;
+    pub async fn get_transactions_paginated(
+        &self,
+        plan_id: &str,
+        limit: Option<i32>,
+        since_date: Option<&str>,
+    ) -> Result<Vec<Transaction>, ClientError> {
+        let mut endpoint = format!("/plans/{}/transactions", plan_id);
+        let mut params = Vec::new();
+        if let Some(l) = limit {
+            params.push(format!("limit={}", l));
+        }
+        if let Some(sd) = since_date {
+            params.push(format!("since_date={}", sd));
+        }
+        if !params.is_empty() {
+            endpoint = format!("{}?{}", endpoint, params.join("&"));
+        }
+        let resp: TransactionsResponse = self.get(&endpoint).await?;
+        Ok(resp.data.transactions)
+    }
+
+    pub async fn get_transaction(
+        &self,
+        plan_id: &str,
+        transaction_id: &str,
+    ) -> Result<Transaction, ClientError> {
+        let resp: TransactionResponse = self.get(&format!(
+            "/plans/{}/transactions/{}",
+            plan_id, transaction_id
+        )).await?;
         Ok(resp.data.transaction)
     }
 
-    pub async fn get_transactions_by_month(&self, plan_id: &str, month: &str) -> Result<Vec<Transaction>, ClientError> {
-        let resp: TransactionsResponse = self.get(&format!("/plans/{}/months/{}/transactions", plan_id, month)).await?;
+    pub async fn get_transactions_by_month(
+        &self,
+        plan_id: &str,
+        month: &str,
+    ) -> Result<Vec<Transaction>, ClientError> {
+        let resp: TransactionsResponse =
+            self.get(&format!("/plans/{}/months/{}/transactions", plan_id, month)).await?;
         Ok(resp.data.transactions)
     }
 
-    pub async fn get_transactions_by_account(&self, plan_id: &str, account_id: &str) -> Result<Vec<Transaction>, ClientError> {
-        let resp: TransactionsResponse = self.get(&format!("/plans/{}/accounts/{}/transactions", plan_id, account_id)).await?;
+    pub async fn get_transactions_by_account(
+        &self,
+        plan_id: &str,
+        account_id: &str,
+    ) -> Result<Vec<Transaction>, ClientError> {
+        let resp: TransactionsResponse = self.get(&format!(
+            "/plans/{}/accounts/{}/transactions",
+            plan_id, account_id
+        )).await?;
         Ok(resp.data.transactions)
     }
 
-    pub async fn get_transactions_by_category(&self, plan_id: &str, category_id: &str) -> Result<Vec<Transaction>, ClientError> {
-        let resp: TransactionsResponse = self.get(&format!("/plans/{}/categories/{}/transactions", plan_id, category_id)).await?;
+    pub async fn get_transactions_by_category(
+        &self,
+        plan_id: &str,
+        category_id: &str,
+    ) -> Result<Vec<Transaction>, ClientError> {
+        let resp: TransactionsResponse = self.get(&format!(
+            "/plans/{}/categories/{}/transactions",
+            plan_id, category_id
+        )).await?;
         Ok(resp.data.transactions)
     }
 
-    pub async fn get_transactions_by_payee(&self, plan_id: &str, payee_id: &str) -> Result<Vec<Transaction>, ClientError> {
-        let resp: TransactionsResponse = self.get(&format!("/plans/{}/payees/{}/transactions", plan_id, payee_id)).await?;
+    /// Search for payees by name and return their transactions.
+    /// This is a convenience method that combines get_payees and get_transactions_by_payee.
+    pub async fn search_payee_transactions(
+        &self,
+        plan_id: &str,
+        payee_search: &str,
+    ) -> Result<Vec<Transaction>, ClientError> {
+        // First get all payees
+        let payees: Vec<Payee> = self.get_payees(plan_id).await?;
+        
+        // Find payee IDs that contain the search term (case-insensitive)
+        let matching_payee_ids: Vec<String> = payees
+            .into_iter()
+            .filter(|p| !p.deleted && p.name.to_lowercase().contains(&payee_search.to_lowercase()))
+            .map(|p| p.id)
+            .collect();
+        
+        // Get transactions for all matching payees
+        let mut all_transactions = Vec::new();
+        for payee_id in &matching_payee_ids {
+            let transactions = self.get_transactions_by_payee(plan_id, payee_id).await?;
+            all_transactions.extend(transactions);
+        }
+        
+        // Sort by date descending
+        all_transactions.sort_by(|a, b| b.date.cmp(&a.date));
+        
+        Ok(all_transactions)
+    }
+
+    pub async fn get_transactions_by_payee(
+        &self,
+        plan_id: &str,
+        payee_id: &str,
+    ) -> Result<Vec<Transaction>, ClientError> {
+        let resp: TransactionsResponse = self.get(&format!(
+            "/plans/{}/payees/{}/transactions",
+            plan_id, payee_id
+        )).await?;
         Ok(resp.data.transactions)
     }
 
     // Scheduled Transactions
-    pub async fn get_scheduled_transactions(&self, plan_id: &str) -> Result<Vec<ScheduledTransaction>, ClientError> {
-        let resp: ScheduledTransactionsResponse = self.get(&format!("/plans/{}/scheduled_transactions", plan_id)).await?;
+    pub async fn get_scheduled_transactions(
+        &self,
+        plan_id: &str,
+    ) -> Result<Vec<ScheduledTransaction>, ClientError> {
+        let resp: ScheduledTransactionsResponse =
+            self.get(&format!("/plans/{}/scheduled_transactions", plan_id)).await?;
         Ok(resp.data.scheduled_transactions)
     }
 
-    pub async fn get_scheduled_transaction(&self, plan_id: &str, scheduled_transaction_id: &str) -> Result<ScheduledTransaction, ClientError> {
-        let resp: ScheduledTransactionResponse = self.get(&format!("/plans/{}/scheduled_transactions/{}", plan_id, scheduled_transaction_id)).await?;
+    pub async fn get_scheduled_transaction(
+        &self,
+        plan_id: &str,
+        scheduled_transaction_id: &str,
+    ) -> Result<ScheduledTransaction, ClientError> {
+        let resp: ScheduledTransactionResponse = self.get(&format!(
+            "/plans/{}/scheduled_transactions/{}",
+            plan_id, scheduled_transaction_id
+        )).await?;
         Ok(resp.data.scheduled_transaction)
     }
 
     // Money Movements
     pub async fn get_money_movements(&self, plan_id: &str) -> Result<Vec<MoneyMovement>, ClientError> {
-        let resp: MoneyMovementsResponse = self.get(&format!("/plans/{}/money_movements", plan_id)).await?;
+        let resp: MoneyMovementsResponse =
+            self.get(&format!("/plans/{}/money_movements", plan_id)).await?;
         Ok(resp.data.money_movements)
     }
 
-    pub async fn get_month_money_movements(&self, plan_id: &str, month: &str) -> Result<Vec<MoneyMovement>, ClientError> {
-        let resp: MoneyMovementsResponse = self.get(&format!("/plans/{}/months/{}/money_movements", plan_id, month)).await?;
+    pub async fn get_month_money_movements(
+        &self,
+        plan_id: &str,
+        month: &str,
+    ) -> Result<Vec<MoneyMovement>, ClientError> {
+        let resp: MoneyMovementsResponse = self.get(&format!(
+            "/plans/{}/months/{}/money_movements",
+            plan_id, month
+        )).await?;
         Ok(resp.data.money_movements)
     }
 }
@@ -184,7 +296,10 @@ impl Client {
 #[derive(Debug)]
 pub enum ClientError {
     Network(String),
-    Api { status: reqwest::StatusCode, body: String },
+    Api {
+        status: reqwest::StatusCode,
+        body: String,
+    },
     Parse(String),
 }
 
@@ -449,22 +564,44 @@ pub struct TransactionsData {
 #[derive(Deserialize, Serialize, Clone)]
 pub struct Transaction {
     pub id: String,
-    #[serde(rename = "type")]
-    pub transaction_type: String,
     pub date: String,
     pub amount: i64,
+    pub amount_formatted: Option<String>,
+    pub amount_currency: Option<f64>,
+    pub memo: Option<String>,
     pub cleared: ClearedStatus,
     pub approved: bool,
+    pub flag_color: Option<String>,
+    pub flag_name: Option<String>,
     pub account_id: String,
+    pub account_name: Option<String>,
     pub payee_id: Option<String>,
+    pub payee_name: Option<String>,
     pub category_id: Option<String>,
+    pub category_name: Option<String>,
     pub transfer_account_id: Option<String>,
     pub transfer_transaction_id: Option<String>,
-    pub reference_number: Option<String>,
+    pub matched_transaction_id: Option<String>,
+    pub import_id: Option<String>,
+    pub import_payee_name: Option<String>,
+    pub import_payee_name_original: Option<String>,
+    pub debt_transaction_type: Option<String>,
+    pub deleted: bool,
+    pub subtransactions: Vec<SubTransaction>,
+}
+
+#[derive(Deserialize, Serialize, Clone)]
+pub struct SubTransaction {
+    pub id: String,
+    pub transaction_id: String,
+    pub amount: i64,
     pub memo: Option<String>,
+    pub payee_id: Option<String>,
     pub payee_name: Option<String>,
+    pub category_id: Option<String>,
     pub category_name: Option<String>,
-    pub account_name: Option<String>,
+    pub transfer_account_id: Option<String>,
+    pub transfer_transaction_id: Option<String>,
     pub deleted: bool,
 }
 
@@ -494,7 +631,10 @@ impl<'de> Deserialize<'de> for ClearedStatus {
                     "cleared" => Ok(ClearedStatus::Cleared),
                     "uncleared" => Ok(ClearedStatus::Uncleared),
                     "reconciled" => Ok(ClearedStatus::Reconciled),
-                    _ => Err(de::Error::unknown_variant(value, &["cleared", "uncleared", "reconciled"])),
+                    _ => Err(de::Error::unknown_variant(
+                        value,
+                        &["cleared", "uncleared", "reconciled"],
+                    )),
                 }
             }
         }
@@ -529,20 +669,24 @@ pub struct ScheduledTransactionsData {
 #[derive(Deserialize, Serialize, Clone)]
 pub struct ScheduledTransaction {
     pub id: String,
-    #[serde(rename = "type")]
-    pub transaction_type: String,
-    pub account_id: String,
-    pub payee_id: Option<String>,
-    pub category_id: Option<String>,
-    pub amount: i64,
-    pub cleared: ClearedStatus,
+    pub date_first: Option<String>,
+    pub date_next: Option<String>,
     pub frequency: String,
-    pub start_date: String,
-    pub next_occurrence_date: String,
-    pub payee_name: Option<String>,
-    pub category_name: Option<String>,
+    pub amount: i64,
+    pub amount_formatted: Option<String>,
+    pub amount_currency: Option<f64>,
+    pub memo: Option<String>,
+    pub flag_color: Option<String>,
+    pub flag_name: Option<String>,
+    pub account_id: String,
     pub account_name: Option<String>,
+    pub payee_id: Option<String>,
+    pub payee_name: Option<String>,
+    pub category_id: Option<String>,
+    pub category_name: Option<String>,
+    pub transfer_account_id: Option<String>,
     pub deleted: bool,
+    pub subtransactions: Vec<SubTransaction>,
 }
 
 #[derive(Deserialize)]
@@ -572,15 +716,16 @@ pub struct MoneyMovementsData {
 #[derive(Deserialize)]
 pub struct MoneyMovement {
     pub id: String,
-    #[serde(rename = "type")]
-    pub movement_type: String,
-    pub amount: i64,
-    pub from_account_id: Option<String>,
-    pub to_account_id: Option<String>,
+    pub month: String,
+    pub moved_at: Option<String>,
+    pub note: Option<String>,
+    pub money_movement_group_id: Option<String>,
+    pub performed_by_user_id: Option<String>,
     pub from_category_id: Option<String>,
     pub to_category_id: Option<String>,
-    pub date: String,
-    pub memo: Option<String>,
+    pub amount: i64,
+    pub amount_formatted: Option<String>,
+    pub amount_currency: Option<f64>,
     pub deleted: bool,
 }
 
@@ -631,7 +776,11 @@ pub fn calculate_category_spending(transactions: &[Transaction], category_id: &s
 }
 
 /// Filter transactions by date range, returning owned transactions.
-pub fn filter_transactions_by_date(transactions: &[Transaction], start: &str, end: &str) -> Vec<Transaction> {
+pub fn filter_transactions_by_date(
+    transactions: &[Transaction],
+    start: &str,
+    end: &str,
+) -> Vec<Transaction> {
     transactions
         .iter()
         .filter(|tx| !tx.deleted && tx.date.as_str() >= start && tx.date.as_str() <= end)
@@ -792,22 +941,30 @@ mod tests {
     ) -> Transaction {
         Transaction {
             id: id.to_string(),
-            transaction_type: " debit".to_string(),
             date: date.to_string(),
             amount,
+            amount_formatted: None,
+            amount_currency: None,
+            memo: None,
             cleared: ClearedStatus::Cleared,
             approved: true,
+            flag_color: None,
+            flag_name: None,
             account_id: "account-1".to_string(),
+            account_name: None,
             payee_id: None,
+            payee_name,
             category_id,
+            category_name: None,
             transfer_account_id: None,
             transfer_transaction_id: None,
-            reference_number: None,
-            memo: None,
-            payee_name,
-            category_name: None,
-            account_name: None,
+            matched_transaction_id: None,
+            import_id: None,
+            import_payee_name: None,
+            import_payee_name_original: None,
+            debt_transaction_type: None,
             deleted: false,
+            subtransactions: vec![],
         }
     }
 
@@ -847,9 +1004,27 @@ mod tests {
     fn aggregate_by_payee_groups_transactions_by_payee() {
         // Arrange
         let transactions = vec![
-            make_transaction("tx1", -5000, "2026-04-01", Some("cat-1".to_string()), Some("Grocery Store".to_string())),
-            make_transaction("tx2", -3000, "2026-04-02", Some("cat-1".to_string()), Some("Grocery Store".to_string())),
-            make_transaction("tx3", -2000, "2026-04-03", Some("cat-1".to_string()), Some("Gas Station".to_string())),
+            make_transaction(
+                "tx1",
+                -5000,
+                "2026-04-01",
+                Some("cat-1".to_string()),
+                Some("Grocery Store".to_string()),
+            ),
+            make_transaction(
+                "tx2",
+                -3000,
+                "2026-04-02",
+                Some("cat-1".to_string()),
+                Some("Grocery Store".to_string()),
+            ),
+            make_transaction(
+                "tx3",
+                -2000,
+                "2026-04-03",
+                Some("cat-1".to_string()),
+                Some("Gas Station".to_string()),
+            ),
         ];
         // Act
         let result = aggregate_by_payee(&transactions, "cat-1");
@@ -862,9 +1037,21 @@ mod tests {
     #[test]
     fn aggregate_by_payee_filters_deleted_transactions() {
         // Arrange
-        let mut tx1 = make_transaction("tx1", -5000, "2026-04-01", Some("cat-1".to_string()), Some("Grocery Store".to_string()));
+        let mut tx1 = make_transaction(
+            "tx1",
+            -5000,
+            "2026-04-01",
+            Some("cat-1".to_string()),
+            Some("Grocery Store".to_string()),
+        );
         tx1.deleted = true;
-        let tx2 = make_transaction("tx2", -3000, "2026-04-02", Some("cat-1".to_string()), Some("Grocery Store".to_string()));
+        let tx2 = make_transaction(
+            "tx2",
+            -3000,
+            "2026-04-02",
+            Some("cat-1".to_string()),
+            Some("Grocery Store".to_string()),
+        );
         let transactions = vec![tx1, tx2];
         // Act
         let result = aggregate_by_payee(&transactions, "cat-1");
@@ -877,8 +1064,20 @@ mod tests {
     fn aggregate_by_payee_filters_by_category_id() {
         // Arrange
         let transactions = vec![
-            make_transaction("tx1", -5000, "2026-04-01", Some("cat-1".to_string()), Some("Store A".to_string())),
-            make_transaction("tx2", -3000, "2026-04-02", Some("cat-2".to_string()), Some("Store B".to_string())),
+            make_transaction(
+                "tx1",
+                -5000,
+                "2026-04-01",
+                Some("cat-1".to_string()),
+                Some("Store A".to_string()),
+            ),
+            make_transaction(
+                "tx2",
+                -3000,
+                "2026-04-02",
+                Some("cat-2".to_string()),
+                Some("Store B".to_string()),
+            ),
         ];
         // Act
         let result = aggregate_by_payee(&transactions, "cat-1");
@@ -916,9 +1115,27 @@ mod tests {
     fn calculate_category_spending_sums_all_matching_transactions() {
         // Arrange
         let transactions = vec![
-            make_transaction("tx1", -5000, "2026-04-01", Some("cat-1".to_string()), Some("Store".to_string())),
-            make_transaction("tx2", -3000, "2026-04-02", Some("cat-1".to_string()), Some("Store".to_string())),
-            make_transaction("tx3", -2000, "2026-04-03", Some("cat-2".to_string()), Some("Store".to_string())),
+            make_transaction(
+                "tx1",
+                -5000,
+                "2026-04-01",
+                Some("cat-1".to_string()),
+                Some("Store".to_string()),
+            ),
+            make_transaction(
+                "tx2",
+                -3000,
+                "2026-04-02",
+                Some("cat-1".to_string()),
+                Some("Store".to_string()),
+            ),
+            make_transaction(
+                "tx3",
+                -2000,
+                "2026-04-03",
+                Some("cat-2".to_string()),
+                Some("Store".to_string()),
+            ),
         ];
         // Act
         let result = calculate_category_spending(&transactions, "cat-1");
@@ -929,9 +1146,21 @@ mod tests {
     #[test]
     fn calculate_category_spending_excludes_deleted_transactions() {
         // Arrange
-        let mut tx1 = make_transaction("tx1", -5000, "2026-04-01", Some("cat-1".to_string()), Some("Store".to_string()));
+        let mut tx1 = make_transaction(
+            "tx1",
+            -5000,
+            "2026-04-01",
+            Some("cat-1".to_string()),
+            Some("Store".to_string()),
+        );
         tx1.deleted = true;
-        let tx2 = make_transaction("tx2", -3000, "2026-04-02", Some("cat-1".to_string()), Some("Store".to_string()));
+        let tx2 = make_transaction(
+            "tx2",
+            -3000,
+            "2026-04-02",
+            Some("cat-1".to_string()),
+            Some("Store".to_string()),
+        );
         let transactions = vec![tx1, tx2];
         // Act
         let result = calculate_category_spending(&transactions, "cat-1");
@@ -942,9 +1171,13 @@ mod tests {
     #[test]
     fn calculate_category_spending_zero_for_no_matches() {
         // Arrange
-        let transactions = vec![
-            make_transaction("tx1", -5000, "2026-04-01", Some("cat-1".to_string()), Some("Store".to_string())),
-        ];
+        let transactions = vec![make_transaction(
+            "tx1",
+            -5000,
+            "2026-04-01",
+            Some("cat-1".to_string()),
+            Some("Store".to_string()),
+        )];
         // Act
         let result = calculate_category_spending(&transactions, "cat-nonexistent");
         // Assert
@@ -1007,9 +1240,13 @@ mod tests {
     #[test]
     fn filter_transactions_by_date_returns_empty_for_no_matches() {
         // Arrange
-        let transactions = vec![
-            make_transaction("tx1", -5000, "2026-06-01", Some("cat-1".to_string()), None),
-        ];
+        let transactions = vec![make_transaction(
+            "tx1",
+            -5000,
+            "2026-06-01",
+            Some("cat-1".to_string()),
+            None,
+        )];
         // Act
         let result = filter_transactions_by_date(&transactions, "2026-04-01", "2026-04-30");
         // Assert

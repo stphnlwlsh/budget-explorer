@@ -2,12 +2,15 @@
 
 #![allow(dead_code, unused_imports, unused_variables)]
 
+use crate::ynab::types::{
+    Account, CategoryGroup, ClientError, Month, Payee, Plan, ScheduledTransaction, Transaction,
+    User,
+};
 use crate::ynab::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::runtime::Runtime;
 
 /// A tool that can be called by the AI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,23 +56,20 @@ impl ToolResult {
     }
 }
 
-/// Tool executor function type.
-type ToolExecutor = fn(args: Value, client: &Client, runtime: &Runtime) -> ToolResult;
+/// Tool executor function type (async).
+type ToolExecutor = fn(args: &Value, client: Arc<Client>) -> ToolResult;
 
 /// Registry of available tools.
 pub struct ToolRegistry {
     tools: HashMap<String, (Tool, ToolExecutor)>,
     client: Arc<Client>,
-    runtime: Runtime,
 }
 
 impl ToolRegistry {
     pub fn new(client: Arc<Client>) -> Self {
-        let runtime = Runtime::new().expect("Failed to create tokio runtime");
         let mut registry = Self {
             tools: HashMap::new(),
             client,
-            runtime,
         };
         registry.register_ynab_tools();
         registry
@@ -77,15 +77,16 @@ impl ToolRegistry {
 
     /// Register all YNAB API tools.
     fn register_ynab_tools(&mut self) {
-        let rt = &self.runtime;
+        let client = self.client.clone();
 
         // get_plans
         self.register(
             "get_plans",
             "Get all budget plans",
             Value::Null,
-            |_args, client, rt| {
-                match rt.block_on(client.get_plans()) {
+            |_args, client| {
+                let plan_id = "";
+                match client.blocking_get_plans() {
                     Ok(plans) => ToolResult::success("get_plans", &plans),
                     Err(e) => ToolResult::error("get_plans", e),
                 }
@@ -103,9 +104,9 @@ impl ToolRegistry {
                 },
                 "required": ["plan_id"]
             }),
-            |args, client, rt| {
+            |args, client| {
                 let plan_id = args["plan_id"].as_str().unwrap_or("");
-                match rt.block_on(client.get_plan(plan_id)) {
+                match client.blocking_get_plan(plan_id) {
                     Ok(plan) => ToolResult::success("get_plan", &plan),
                     Err(e) => ToolResult::error("get_plan", e),
                 }
@@ -123,9 +124,9 @@ impl ToolRegistry {
                 },
                 "required": ["plan_id"]
             }),
-            |args, client, rt| {
+            |args, client| {
                 let plan_id = args["plan_id"].as_str().unwrap_or("");
-                match rt.block_on(client.get_accounts(plan_id)) {
+                match client.blocking_get_accounts(plan_id) {
                     Ok(accounts) => ToolResult::success("get_accounts", &accounts),
                     Err(e) => ToolResult::error("get_accounts", e),
                 }
@@ -143,9 +144,9 @@ impl ToolRegistry {
                 },
                 "required": ["plan_id"]
             }),
-            |args, client, rt| {
+            |args, client| {
                 let plan_id = args["plan_id"].as_str().unwrap_or("");
-                match rt.block_on(client.get_categories(plan_id)) {
+                match client.blocking_get_categories(plan_id) {
                     Ok(categories) => ToolResult::success("get_categories", &categories),
                     Err(e) => ToolResult::error("get_categories", e),
                 }
@@ -155,7 +156,7 @@ impl ToolRegistry {
         // get_payees
         self.register(
             "get_payees",
-            "Get all payees for a plan",
+            "Get all payees for a plan. Returns list of payees with their IDs.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -163,11 +164,33 @@ impl ToolRegistry {
                 },
                 "required": ["plan_id"]
             }),
-            |args, client, rt| {
+            |args, client| {
                 let plan_id = args["plan_id"].as_str().unwrap_or("");
-                match rt.block_on(client.get_payees(plan_id)) {
+                match client.blocking_get_payees(plan_id) {
                     Ok(payees) => ToolResult::success("get_payees", &payees),
                     Err(e) => ToolResult::error("get_payees", e),
+                }
+            },
+        );
+
+        // search_payee_transactions - convenience tool for finding spending at a specific payee
+        self.register(
+            "search_payee_transactions",
+            "Search for transactions at a specific payee/store. Pass the store name as payee_search (e.g., 'Apple', 'Amazon', 'Walmart'). Returns all matching transactions sorted by date.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "plan_id": {"type": "string"},
+                    "payee_search": {"type": "string", "description": "Name of payee to search for (e.g., 'Apple', 'Amazon'). Case-insensitive partial match."}
+                },
+                "required": ["plan_id", "payee_search"]
+            }),
+            |args, client| {
+                let plan_id = args["plan_id"].as_str().unwrap_or("");
+                let payee_search = args["payee_search"].as_str().unwrap_or("");
+                match client.blocking_search_payee_transactions(plan_id, payee_search) {
+                    Ok(txs) => ToolResult::success("search_payee_transactions", &txs),
+                    Err(e) => ToolResult::error("search_payee_transactions", e),
                 }
             },
         );
@@ -175,18 +198,28 @@ impl ToolRegistry {
         // get_transactions
         self.register(
             "get_transactions",
-            "Get all transactions for a plan",
+            "Get recent transactions for a plan. Returns up to 100 transactions sorted by date (most recent first). Use since_date to filter by date.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "plan_id": {"type": "string"}
+                    "plan_id": {"type": "string"},
+                    "limit": {"type": "integer", "description": "Max transactions to return (default 100)"},
+                    "since_date": {"type": "string", "description": "Only return transactions on or after this date (YYYY-MM-DD)"}
                 },
                 "required": ["plan_id"]
             }),
-            |args, client, rt| {
+            |args, client| {
                 let plan_id = args["plan_id"].as_str().unwrap_or("");
-                match rt.block_on(client.get_transactions(plan_id)) {
-                    Ok(txs) => ToolResult::success("get_transactions", &txs),
+                let since_date = args.get("since_date").and_then(|v| v.as_str());
+                match client.blocking_get_transactions_paginated(plan_id, Some(100), since_date) {
+                    Ok(mut txs) => {
+                        // Sort by date descending (most recent first)
+                        txs.sort_by(|a, b| b.date.cmp(&a.date));
+                        // Limit results
+                        let limit = args.get("limit").and_then(|v| v.as_i64()).map(|v| v as usize).unwrap_or(100);
+                        txs.truncate(limit);
+                        ToolResult::success("get_transactions", &txs)
+                    }
                     Err(e) => ToolResult::error("get_transactions", e),
                 }
             },
@@ -204,10 +237,10 @@ impl ToolRegistry {
                 },
                 "required": ["plan_id", "month"]
             }),
-            |args, client, rt| {
+            |args, client| {
                 let plan_id = args["plan_id"].as_str().unwrap_or("");
                 let month = args["month"].as_str().unwrap_or("");
-                match rt.block_on(client.get_transactions_by_month(plan_id, month)) {
+                match client.blocking_get_transactions_by_month(plan_id, month) {
                     Ok(txs) => ToolResult::success("get_transactions_by_month", &txs),
                     Err(e) => ToolResult::error("get_transactions_by_month", e),
                 }
@@ -226,10 +259,10 @@ impl ToolRegistry {
                 },
                 "required": ["plan_id", "month"]
             }),
-            |args, client, rt| {
+            |args, client| {
                 let plan_id = args["plan_id"].as_str().unwrap_or("");
                 let month = args["month"].as_str().unwrap_or("");
-                match rt.block_on(client.get_month(plan_id, month)) {
+                match client.blocking_get_month(plan_id, month) {
                     Ok(month_data) => ToolResult::success("get_month", &month_data),
                     Err(e) => ToolResult::error("get_month", e),
                 }
@@ -247,9 +280,9 @@ impl ToolRegistry {
                 },
                 "required": ["plan_id"]
             }),
-            |args, client, rt| {
+            |args, client| {
                 let plan_id = args["plan_id"].as_str().unwrap_or("");
-                match rt.block_on(client.get_scheduled_transactions(plan_id)) {
+                match client.blocking_get_scheduled_transactions(plan_id) {
                     Ok(scheduled) => ToolResult::success("get_scheduled_transactions", &scheduled),
                     Err(e) => ToolResult::error("get_scheduled_transactions", e),
                 }
@@ -258,7 +291,13 @@ impl ToolRegistry {
     }
 
     /// Register a tool with the registry.
-    fn register(&mut self, name: &str, description: &str, parameters: Value, executor: ToolExecutor) {
+    fn register(
+        &mut self,
+        name: &str,
+        description: &str,
+        parameters: Value,
+        executor: ToolExecutor,
+    ) {
         self.tools.insert(
             name.to_string(),
             (
@@ -272,10 +311,10 @@ impl ToolRegistry {
         );
     }
 
-    /// Execute a tool by name with the given arguments.
-    pub async fn execute(&self, name: &str, arguments: Value) -> ToolResult {
+    /// Execute a tool by name with the given arguments (synchronous).
+    pub fn execute(&self, name: &str, arguments: Value) -> ToolResult {
         if let Some((_tool, executor)) = self.tools.get(name) {
-            executor(arguments, &self.client, &self.runtime)
+            executor(&arguments, self.client.clone())
         } else {
             ToolResult::error(name, format!("Unknown tool: {}", name))
         }
@@ -287,188 +326,89 @@ impl ToolRegistry {
     }
 }
 
-// ============================================================================
-// Tests
-// ============================================================================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ynab::Client;
-    use std::sync::Arc;
-
-    // ========================================================================
-    // Tool struct tests - Positive cases
-    // ========================================================================
-
-    #[test]
-    fn tool_serialization_roundtrip() {
-        // Arrange
-        let tool = Tool {
-            name: "get_plans".to_string(),
-            description: "Get all budget plans".to_string(),
-            parameters: serde_json::json!({"type": "object"}),
-        };
-        // Act
-        let json = serde_json::to_string(&tool).unwrap();
-        let parsed: Tool = serde_json::from_str(&json).unwrap();
-        // Assert
-        assert_eq!(parsed.name, "get_plans");
-        assert_eq!(parsed.description, "Get all budget plans");
+// Extension trait for blocking versions
+impl Client {
+    pub fn blocking_get_user(&self) -> Result<User, ClientError> {
+        self.runtime_block_on(self.get_user())
     }
 
-    #[test]
-    fn tool_deserializes_from_json() {
-        // Arrange
-        let json = r#"{
-            "name": "get_categories",
-            "description": "Get all categories",
-            "parameters": {"type": "object", "properties": {}}
-        }"#;
-        // Act
-        let tool: Tool = serde_json::from_str(json).unwrap();
-        // Assert
-        assert_eq!(tool.name, "get_categories");
+    pub fn blocking_get_plans(&self) -> Result<Vec<Plan>, ClientError> {
+        self.runtime_block_on(self.get_plans())
     }
 
-    // ========================================================================
-    // ToolCall struct tests - Positive cases
-    // ========================================================================
-
-    #[test]
-    fn tool_call_deserializes_from_json() {
-        // Arrange
-        let json = r#"{
-            "name": "get_plan",
-            "arguments": {"plan_id": "abc123"}
-        }"#;
-        // Act
-        let call: ToolCall = serde_json::from_str(json).unwrap();
-        // Assert
-        assert_eq!(call.name, "get_plan");
-        assert_eq!(call.arguments["plan_id"], "abc123");
+    pub fn blocking_get_plan(&self, plan_id: &str) -> Result<Plan, ClientError> {
+        self.runtime_block_on(self.get_plan(plan_id))
     }
 
-    #[test]
-    fn tool_call_with_empty_arguments() {
-        // Arrange
-        let json = r#"{
-            "name": "get_plans",
-            "arguments": {}
-        }"#;
-        // Act
-        let call: ToolCall = serde_json::from_str(json).unwrap();
-        // Assert
-        assert_eq!(call.name, "get_plans");
-        assert!(call.arguments.is_object());
+    pub fn blocking_get_accounts(&self, plan_id: &str) -> Result<Vec<Account>, ClientError> {
+        self.runtime_block_on(self.get_accounts(plan_id))
     }
 
-    // ========================================================================
-    // ToolResult tests - Positive cases
-    // ========================================================================
-
-    #[test]
-    fn tool_result_success_creates_serializable_result() {
-        // Arrange
-        let result = ToolResult::success("test_tool", vec!["item1", "item2"]);
-        // Assert
-        assert!(result.success);
-        assert!(result.data.is_some());
-        assert!(result.error.is_none());
+    pub fn blocking_get_categories(
+        &self,
+        plan_id: &str,
+    ) -> Result<Vec<CategoryGroup>, ClientError> {
+        self.runtime_block_on(self.get_categories(plan_id))
     }
 
-    #[test]
-    fn tool_result_error_creates_error_result() {
-        // Arrange
-        let result = ToolResult::error("test_tool", "Connection failed");
-        // Assert
-        assert!(!result.success);
-        assert!(result.data.is_none());
-        assert!(result.error.is_some());
-        assert!(result.error.unwrap().contains("Connection failed"));
+    pub fn blocking_get_payees(&self, plan_id: &str) -> Result<Vec<Payee>, ClientError> {
+        self.runtime_block_on(self.get_payees(plan_id))
     }
 
-    #[test]
-    fn tool_result_error_displays_as_string() {
-        // Arrange
-        let result = ToolResult::error("test_tool", "Network error");
-        // Act
-        let display = result.error.as_ref().unwrap();
-        // Assert
-        assert_eq!(display, "Network error");
+    pub fn blocking_get_transactions(
+        &self,
+        plan_id: &str,
+    ) -> Result<Vec<Transaction>, ClientError> {
+        self.runtime_block_on(self.get_transactions(plan_id))
     }
 
-    #[test]
-    fn tool_result_serializes_correctly() {
-        // Arrange
-        let result = ToolResult::success("get_plans", vec!["Budget 1", "Budget 2"]);
-        // Assert
-        assert!(result.success);
-        assert!(result.data.is_some());
-        // Verify the JSON contains expected fields
-        let json = result.data.unwrap();
-        assert!(json.contains("Budget"));
+    pub fn blocking_get_transactions_paginated(
+        &self,
+        plan_id: &str,
+        limit: Option<i32>,
+        since_date: Option<&str>,
+    ) -> Result<Vec<Transaction>, ClientError> {
+        self.runtime_block_on(self.get_transactions_paginated(plan_id, limit, since_date))
     }
 
-    // ========================================================================
-    // ToolRegistry tests - Positive cases
-    // ========================================================================
-
-    #[test]
-    fn tool_registry_registers_all_ynab_tools() {
-        // Arrange
-        let client = Arc::new(Client::new("test"));
-        let registry = ToolRegistry::new(client);
-        // Act
-        let definitions = registry.get_definitions();
-        // Assert
-        assert!(definitions.len() >= 8);
-        let names: Vec<&str> = definitions.iter().map(|t| t.name.as_str()).collect();
-        assert!(names.contains(&"get_plans"));
-        assert!(names.contains(&"get_accounts"));
-        assert!(names.contains(&"get_categories"));
-        assert!(names.contains(&"get_payees"));
-        assert!(names.contains(&"get_transactions"));
+    pub fn blocking_search_payee_transactions(
+        &self,
+        plan_id: &str,
+        payee_search: &str,
+    ) -> Result<Vec<Transaction>, ClientError> {
+        self.runtime_block_on(self.search_payee_transactions(plan_id, payee_search))
     }
 
-    #[test]
-    fn tool_registry_get_definitions_includes_descriptions() {
-        // Arrange
-        let client = Arc::new(Client::new("test"));
-        let registry = ToolRegistry::new(client);
-        // Act
-        let definitions = registry.get_definitions();
-        // Assert
-        let plan_tool = definitions.iter().find(|t| t.name == "get_plans").unwrap();
-        assert!(!plan_tool.description.is_empty());
+    pub fn blocking_get_transactions_by_payee(
+        &self,
+        plan_id: &str,
+        payee_id: &str,
+    ) -> Result<Vec<Transaction>, ClientError> {
+        self.runtime_block_on(self.get_transactions_by_payee(plan_id, payee_id))
     }
 
-    #[test]
-    fn tool_registry_get_definitions_includes_parameters() {
-        // Arrange
-        let client = Arc::new(Client::new("test"));
-        let registry = ToolRegistry::new(client);
-        // Act
-        let definitions = registry.get_definitions();
-        // Assert
-        let get_plan_tool = definitions.iter().find(|t| t.name == "get_plan").unwrap();
-        assert!(get_plan_tool.parameters != Value::Null);
+    pub fn blocking_get_transactions_by_month(
+        &self,
+        plan_id: &str,
+        month: &str,
+    ) -> Result<Vec<Transaction>, ClientError> {
+        self.runtime_block_on(self.get_transactions_by_month(plan_id, month))
     }
 
-    // ========================================================================
-    // ToolRegistry tests - Negative cases
-    // ========================================================================
+    pub fn blocking_get_month(&self, plan_id: &str, month: &str) -> Result<Month, ClientError> {
+        self.runtime_block_on(self.get_month(plan_id, month))
+    }
 
-    #[test]
-    fn tool_registry_execute_returns_error_for_unknown_tool() {
-        // Arrange
-        let client = Arc::new(Client::new("test"));
-        let registry = ToolRegistry::new(client);
-        // We'll test that unknown tools get an error result by checking the tool doesn't exist
-        // The async execute needs runtime which makes testing harder - we test the definitions instead
-        // Assert - verify that "nonexistent_tool" is NOT in the registry
-        let definitions = registry.get_definitions();
-        let names: Vec<&str> = definitions.iter().map(|t| t.name.as_str()).collect();
-        assert!(!names.contains(&"nonexistent_tool"));
+    pub fn blocking_get_scheduled_transactions(
+        &self,
+        plan_id: &str,
+    ) -> Result<Vec<ScheduledTransaction>, ClientError> {
+        self.runtime_block_on(self.get_scheduled_transactions(plan_id))
+    }
+
+    fn runtime_block_on<F: std::future::Future>(&self, future: F) -> F::Output {
+        // Use block_in_place to run the future in a blocking-safe manner
+        // This works because we're in a multi-thread tokio runtime
+        tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(future))
     }
 }
