@@ -1,17 +1,35 @@
 //! AI Module - LLM providers and agent
+//!
+//! GAME Framework implementation:
+//! - G (Goals): Task goals that guide agent behavior
+//! - A (Actions): Tool registry (in tools/mod.rs)
+//! - M (Memory): Conversation memory (in agent.rs)
+//! - E (Environment): YNAB API abstraction
 
 #![allow(dead_code, unused_imports, unused_variables)]
 
 pub mod agent;
 pub mod ollama;
+pub mod goal;
 
 pub use agent::Agent;
 pub use ollama::OllamaProvider;
+
+// GAME Framework exports from goal.rs
+pub use crate::ai::goal::{Goal, standard_goals, merge_goals, Environment, YnabEnvironment};
+
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use crate::profile::{AdviceStyle, Tone, UserProfile};
+
+// ============================================================================
+// GAME Framework (defined in goal.rs)
+// ============================================================================
+// Goals and Environment are defined in goal.rs module
+// Re-exported at module level for convenience
 
 /// Message in a conversation.
 #[derive(Debug, Clone, Serialize, Deserialize)]

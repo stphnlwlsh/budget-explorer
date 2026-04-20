@@ -166,7 +166,10 @@ async fn chat(debug: bool, initial_query: Option<String>) -> Result<(), Box<dyn 
     }
 
     // Interactive mode
-    println!("Budget Explorer Chat (type 'exit' to quit)\n");
+    println!("Budget Explorer Chat");
+    println!("  Type a new question to cancel current thinking");
+    println!("  Type 'exit' to quit\n");
+
     loop {
         print!("You: ");
         io::stdout().flush()?;
@@ -178,6 +181,7 @@ async fn chat(debug: bool, initial_query: Option<String>) -> Result<(), Box<dyn 
             break;
         }
 
+        // Cancel shortcut: typing anything new cancels previous thinking
         run_query(&mut agent, &system_prompt, input, debug).await;
     }
 
