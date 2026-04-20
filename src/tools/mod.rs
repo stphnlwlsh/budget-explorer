@@ -9,6 +9,7 @@ use crate::ynab::types::{
 use crate::ynab::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -34,6 +35,7 @@ pub struct ToolResult {
     pub success: bool,
     pub data: Option<String>,
     pub error: Option<String>,
+    pub suggestions: Vec<String>,
 }
 
 impl ToolResult {
@@ -43,6 +45,7 @@ impl ToolResult {
             success: true,
             data: serde_json::to_string(&data).ok(),
             error: None,
+            suggestions: vec![],
         }
     }
 
@@ -52,6 +55,33 @@ impl ToolResult {
             success: false,
             data: None,
             error: Some(e.to_string()),
+            suggestions: vec![],
+        }
+    }
+
+    /// Create an error with a suggestion for the next action.
+    pub fn error_with_suggestion(tool: &str, e: impl std::fmt::Display, suggestion: &str) -> Self {
+        Self {
+            tool: tool.to_string(),
+            success: false,
+            data: None,
+            error: Some(e.to_string()),
+            suggestions: vec![suggestion.to_string()],
+        }
+    }
+
+    /// Create an error with multiple suggestions.
+    pub fn error_with_suggestions(
+        tool: &str,
+        e: impl std::fmt::Display,
+        suggestions: Vec<String>,
+    ) -> Self {
+        Self {
+            tool: tool.to_string(),
+            success: false,
+            data: None,
+            error: Some(e.to_string()),
+            suggestions,
         }
     }
 }
@@ -63,6 +93,7 @@ type ToolExecutor = fn(args: &Value, client: Arc<Client>) -> ToolResult;
 pub struct ToolRegistry {
     tools: HashMap<String, (Tool, ToolExecutor)>,
     client: Arc<Client>,
+    valid_plan_ids: RefCell<Vec<String>>,
 }
 
 impl ToolRegistry {
@@ -70,9 +101,30 @@ impl ToolRegistry {
         let mut registry = Self {
             tools: HashMap::new(),
             client,
+            valid_plan_ids: RefCell::new(vec![]),
         };
         registry.register_ynab_tools();
         registry
+    }
+
+    /// Initialize valid plan IDs by fetching from the API.
+    pub fn init_plan_ids(&self) {
+        if let Ok(plans) = self.client.blocking_get_plans() {
+            *self.valid_plan_ids.borrow_mut() = plans.iter().map(|p| p.id.clone()).collect();
+        }
+    }
+
+    /// Validate a plan_id and return an error with suggestion if invalid.
+    fn validate_plan_id(&self, plan_id: &str) -> Option<ToolResult> {
+        let valid_ids = self.valid_plan_ids.borrow();
+        if !valid_ids.is_empty() && !valid_ids.contains(&plan_id.to_string()) {
+            return Some(ToolResult::error_with_suggestion(
+                "plan_id",
+                format!("Invalid plan_id '{}'. Plan not found.", plan_id),
+                "Call get_plans to see available plan IDs.",
+            ));
+        }
+        None
     }
 
     /// Register all YNAB API tools.
@@ -325,13 +377,71 @@ impl ToolRegistry {
         );
     }
 
+    /// Tools that require a plan_id parameter.
+    const PLAN_ID_REQUIRED_TOOLS: &'static [&'static str] = &[
+        "get_plan",
+        "get_accounts",
+        "get_categories",
+        "get_payees",
+        "search_payee_transactions",
+        "get_transactions",
+        "get_transactions_by_month",
+        "get_month",
+        "get_scheduled_transactions",
+    ];
+
     /// Execute a tool by name with the given arguments (synchronous).
     pub fn execute(&self, name: &str, arguments: Value) -> ToolResult {
-        if let Some((_tool, executor)) = self.tools.get(name) {
-            executor(&arguments, self.client.clone())
-        } else {
-            ToolResult::error(name, format!("Unknown tool: {}", name))
+        // Check if tool exists
+        let Some((tool, executor)) = self.tools.get(name) else {
+            return ToolResult::error_with_suggestion(
+                name,
+                format!(
+                    "Unknown tool: {}. Use get_plans to see available tools.",
+                    name
+                ),
+                "Call get_plans to see all available tools.",
+            );
+        };
+
+        // Validate plan_id for tools that require it
+        if Self::PLAN_ID_REQUIRED_TOOLS.contains(&name) {
+            if let Some(plan_id) = arguments.get("plan_id").and_then(|v| v.as_str()) {
+                let valid_ids = self.valid_plan_ids.borrow();
+                if !valid_ids.is_empty() && !valid_ids.contains(&plan_id.to_string()) {
+                    return ToolResult::error_with_suggestion(
+                        name,
+                        format!(
+                            "Invalid plan_id '{}'. This plan does not exist or you do not have access.",
+                            plan_id
+                        ),
+                        "Call get_plans to see available plan IDs.",
+                    );
+                }
+            } else if tool.parameters != Value::Null {
+                // Parameter is required but missing
+                return ToolResult::error_with_suggestion(
+                    name,
+                    "Missing required parameter: plan_id",
+                    "Provide a valid plan_id from get_plans.",
+                );
+            }
         }
+
+        // Execute the tool
+        let result = executor(&arguments, self.client.clone());
+
+        // After get_plans succeeds, cache the plan IDs
+        if name == "get_plans" && result.success {
+            if let Some(ref data) = result.data {
+                if let Ok(plans) = serde_json::from_str::<Vec<Plan>>(data) {
+                    *self.valid_plan_ids.borrow_mut() =
+                        plans.iter().map(|p| p.id.clone()).collect();
+                }
+            }
+        }
+
+        result
     }
 
     /// Get all tool definitions for the AI.

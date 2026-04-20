@@ -514,7 +514,13 @@ impl Agent {
                 .clone()
                 .unwrap_or_else(|| "No data returned".to_string())
         } else if let Some(ref error) = result.error {
-            format!("Error: {}", error)
+            // Include suggestions in error message if present
+            if !result.suggestions.is_empty() {
+                let suggestions = result.suggestions.join(" ");
+                format!("Error: {}. {}", error, suggestions)
+            } else {
+                format!("Error: {}", error)
+            }
         } else {
             "Unknown error".to_string()
         }
@@ -846,6 +852,7 @@ Let me know if you need anything else!"#;
             success: true,
             data: Some(r#"[{"id": "plan-1", "name": "My Budget"}]"#.to_string()),
             error: None,
+            suggestions: vec![],
         };
         let formatted = agent.format_tool_result(&result);
         assert!(formatted.contains("plan-1"));
@@ -859,6 +866,7 @@ Let me know if you need anything else!"#;
             success: true,
             data: None,
             error: None,
+            suggestions: vec![],
         };
         let formatted = agent.format_tool_result(&result);
         assert_eq!(formatted, "No data returned");
@@ -872,6 +880,7 @@ Let me know if you need anything else!"#;
             success: false,
             data: None,
             error: Some("Network error: connection refused".to_string()),
+            suggestions: vec![],
         };
         let formatted = agent.format_tool_result(&result);
         assert!(formatted.contains("Error"));
@@ -885,6 +894,7 @@ Let me know if you need anything else!"#;
             success: false,
             data: None,
             error: None,
+            suggestions: vec![],
         };
         let formatted = agent.format_tool_result(&result);
         assert_eq!(formatted, "Unknown error");
